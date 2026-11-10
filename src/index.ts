@@ -8,6 +8,7 @@ import TransactionRoutes from "./modules/transaction/transactionRoutes";
 import TransactionWebhookRoutes from "./modules/transaction/transactionWebhookRoutes";
 import CategoryRoutes from "./modules/category/categoryRoutes";
 import DashboardRoutes from "./modules/dashboard/dashboardRoutes";
+import HubRoutes from "./modules/hub/hubRoutes";
 import { logRouting } from "./middleware/logrouting";
 import { logRequest } from "./middleware/logrequest";
 import { validateToken } from "./middleware/validateToken";
@@ -32,6 +33,9 @@ logRouting(app);
 // public routes
 app.use("/auth/v1", UserRoutes);
 app.use("/api", TransactionWebhookRoutes);
+
+// hub modular & mcp routes
+app.use("/api/v1", HubRoutes);
 
 // protected routes
 app.use("/api/v1", validateToken, TransactionRoutes);
