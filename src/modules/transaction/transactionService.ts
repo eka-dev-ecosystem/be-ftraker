@@ -500,7 +500,8 @@ class TransactionService {
             if (isRequestCancelled(req, res)) return;
 
             const user = req.user!;
-            const filter = TransactionService.buildFilter(req.query, user.id_user);
+            const timezone = await resolveUserTimezone(req, user.id_user);
+            const filter = TransactionService.buildFilter(req.query, user.id_user, timezone);
 
             if (isRequestCancelled(req, res)) return;
 
@@ -521,12 +522,14 @@ class TransactionService {
             }
 
             const balance = incomeTotal - expenseTotal;
+            const totalCount = transactions.length;
 
             return res.status(200).json(SuccessResponse({
+                totalCount,
+                transactionCount: totalCount,
                 incomeTotal,
                 expenseTotal,
                 balance,
-                transactionCount: transactions.length,
             }, "Transaction summary retrieved successfully", 200));
         } catch (error) {
             if (isRequestCancelled(req, res) || (error as any)?.name === "AbortError") {
