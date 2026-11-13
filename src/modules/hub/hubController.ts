@@ -220,12 +220,31 @@ export class HubController {
                 }
 
                 if (toolName === "create_transaction") {
-                    const amount = Number(args.amount) || 0;
-                    const rawType = String(args.type || "expense").toLowerCase();
-                    const transType = rawType === "income" ? "Income" : "Expense";
+                    let amount = 0;
+                    if (typeof args.amount === "number") {
+                        amount = args.amount;
+                    } else if (typeof args.amount === "string") {
+                        const cleaned = args.amount.replace(/[^0-9.,]/g, "").replace(/\./g, "").replace(/,/g, ".");
+                        amount = parseFloat(cleaned) || 0;
+                    }
+
+                    const rawType = String(args.type || "expense").toLowerCase().trim();
+                    const transType = (rawType === "income" || rawType === "pemasukan") ? "Income" : "Expense";
                     const description = String(args.description || "Transaksi AI Hub").trim();
                     const categoryName = String(args.category || "General").trim();
-                    const dateVal = args.date ? new Date(args.date) : new Date();
+                    
+                    let dateVal = new Date();
+                    if (args.date) {
+                        const dStr = String(args.date).toLowerCase().trim();
+                        if (dStr === "yesterday" || dStr === "kemarin") {
+                            dateVal.setDate(dateVal.getDate() - 1);
+                        } else if (dStr !== "today" && dStr !== "hari ini") {
+                            const parsed = new Date(args.date);
+                            if (!isNaN(parsed.getTime())) {
+                                dateVal = parsed;
+                            }
+                        }
+                    }
 
                     // Find or create category
                     let categoryId = null;
@@ -238,9 +257,9 @@ export class HubController {
                             cat = await CategoryModel.create({
                                 user: userObjId,
                                 name: categoryName,
-                                type: rawType,
-                                color: rawType === "income" ? "#10b981" : "#ef4444",
-                                icon: rawType === "income" ? "i-heroicons-arrow-down-left" : "i-heroicons-arrow-up-right",
+                                type: transType.toLowerCase(),
+                                color: transType === "Income" ? "#10b981" : "#ef4444",
+                                icon: transType === "Income" ? "i-heroicons-arrow-down-left" : "i-heroicons-arrow-up-right",
                             });
                         }
                         categoryId = cat._id;
