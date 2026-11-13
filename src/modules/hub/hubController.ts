@@ -278,6 +278,22 @@ export class HubController {
                         filter.type = new RegExp(`^${args.type}$`, "i");
                     }
 
+                    if (args.date) {
+                        const dateStr = String(args.date).toLowerCase();
+                        let targetDate = new Date();
+                        if (dateStr === "yesterday") {
+                            targetDate.setDate(targetDate.getDate() - 1);
+                        } else if (dateStr !== "today") {
+                            targetDate = new Date(args.date);
+                        }
+                        const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0, 0);
+                        const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999);
+                        filter.$or = [
+                            { date: { $gte: startOfDay, $lte: endOfDay } },
+                            { date: { $exists: false }, createdAt: { $gte: startOfDay, $lte: endOfDay } }
+                        ];
+                    }
+
                     const items = await TransactionModel.find(filter)
                         .populate("category", "name color icon")
                         .sort({ date: -1, createdAt: -1 })
