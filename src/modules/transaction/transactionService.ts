@@ -5,7 +5,10 @@ import { createTransactionBodySchema, getTransactionQuerySchema, updateTransacti
 import { ErrorResponse, SuccessResponse } from "../../utils/response";
 import TransactionModel from "./transactionModel";
 import useSelectedViewPeriode from "../../utils/selectedViewPeriode";
-import { fromZonedTime } from "date-fns-tz";
+import { fromZonedTime, toZonedTime } from "date-fns-tz";
+import CategoryModel from "../category/categoryModel";
+import { defaultCategories } from "../category/categoryService";
+import { HubController } from "../hub/hubController";
 import { resolveUserTimezone } from "../../utils/timezone";
 import { ZodError } from "zod";
 import mongoose from "mongoose";
@@ -366,17 +369,81 @@ class TransactionService {
             validLinkedIncomeId = parentIncome._id;
         }
 
-        // Real transaction date (when the transaction occurred)
-        const transactionDate = date
-            ? new Date(date)
-            : (createdAt ? new Date(createdAt) : new Date());
+        // Real transaction date with timezone awareness
+        const timezone = await resolveUserTimezone(req, user.id_user);
+        const now = new Date();
+        const userZonedNow = toZonedTime(now, timezone);
+
+        let transactionDate = now;
+        if (date) {
+            const matchYmd = String(date).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+            if (matchYmd) {
+                const year = parseInt(matchYmd[1]);
+                const month = parseInt(matchYmd[2]) - 1;
+                const day = parseInt(matchYmd[3]);
+                const constructedZoned = new Date(year, month, day, userZonedNow.getHours(), userZonedNow.getMinutes(), userZonedNow.getSeconds());
+                transactionDate = fromZonedTime(constructedZoned, timezone);
+            } else {
+                const parsed = new Date(date);
+                if (!isNaN(parsed.getTime())) {
+                    transactionDate = parsed;
+                }
+            }
+        } else if (createdAt) {
+            const parsed = new Date(createdAt);
+            if (!isNaN(parsed.getTime())) transactionDate = parsed;
+        }
+
+        // Smart Category Resolution (accepts ObjectId or string name or infers from description)
+        let validCategoryId: any = null;
+        if (category) {
+            if (mongoose.isValidObjectId(category)) {
+                validCategoryId = new mongoose.Types.ObjectId(category);
+            } else if (typeof category === "string" && category.trim()) {
+                const catName = category.trim();
+                let foundCat = await CategoryModel.findOne({
+                    user: user.id_user,
+                    name: { $regex: new RegExp(`^${catName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, "i") },
+                }).session(session);
+                if (!foundCat) {
+                    const defaultCat = defaultCategories.find(c => c.name.toLowerCase() === catName.toLowerCase());
+                    foundCat = await CategoryModel.create([{
+                        user: user.id_user,
+                        name: defaultCat?.name || catName,
+                        type: defaultCat?.type || normalizedType.toLowerCase(),
+                        color: defaultCat?.color || (normalizedType === "Income" ? "#10B981" : "#F43F5E"),
+                        icon: defaultCat?.icon || (normalizedType === "Income" ? "account_balance_wallet" : "fastfood"),
+                    }], { session }).then(docs => docs[0]);
+                }
+                validCategoryId = foundCat ? foundCat._id : null;
+            }
+        }
+
+        if (!validCategoryId) {
+            const inferred = HubController.inferCategory(description, undefined, normalizedType);
+            let foundCat = await CategoryModel.findOne({
+                user: user.id_user,
+                name: { $regex: new RegExp(`^${inferred.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, "i") },
+            }).session(session);
+            if (!foundCat) {
+                const defaultCat = defaultCategories.find(c => c.name.toLowerCase() === inferred.toLowerCase());
+                foundCat = await CategoryModel.create([{
+                    user: user.id_user,
+                    name: defaultCat?.name || inferred,
+                    type: defaultCat?.type || normalizedType.toLowerCase(),
+                    color: defaultCat?.color || (normalizedType === "Income" ? "#10B981" : "#F43F5E"),
+                    icon: defaultCat?.icon || (normalizedType === "Income" ? "account_balance_wallet" : "fastfood"),
+                }], { session }).then(docs => docs[0]);
+            }
+            validCategoryId = foundCat ? foundCat._id : null;
+        }
 
         const transaction = new TransactionModel({
             user: user.id_user,
             amount,
             type: normalizedType,
             description,
-            category: category || null,
+            category: validCategoryId,
             linkedIncomeId: validLinkedIncomeId,
             date: transactionDate,
         });

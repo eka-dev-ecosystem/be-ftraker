@@ -1,12 +1,71 @@
 import { Request, Response } from "express";
 import mongoose from "mongoose";
+import { toZonedTime, fromZonedTime } from "date-fns-tz";
 import TransactionModel from "../transaction/transactionModel";
 import CategoryModel from "../category/categoryModel";
 import UserModel from "../user/userModel";
 import { verifyJwt } from "../../utils/jwt";
 import logger from "../../utils/logger";
+import { resolveUserTimezone } from "../../utils/timezone";
+import { defaultCategories } from "../category/categoryService";
 
 export class HubController {
+    /**
+     * Intelligently infers transaction category from description and input hints.
+     */
+    public static inferCategory(description: string, rawCategory?: string, transType: string = "Expense"): string {
+        const rawCat = (rawCategory || "").trim();
+        if (rawCat && !["general", "other", "lainnya", "default", "none", "null"].includes(rawCat.toLowerCase())) {
+            const catLower = rawCat.toLowerCase();
+            if (catLower.includes("makan") || catLower.includes("minum") || catLower.includes("food") || catLower.includes("beverage") || catLower.includes("kopi") || catLower.includes("coffee")) {
+                return "Makanan & Minuman";
+            }
+            if (catLower.includes("trans") || catLower.includes("bensin") || catLower.includes("fuel") || catLower.includes("ojol") || catLower.includes("parkir")) {
+                return "Transportasi";
+            }
+            if (catLower.includes("belanja") || catLower.includes("shop") || catLower.includes("grocer")) {
+                return "Belanja";
+            }
+            if (catLower.includes("tagihan") || catLower.includes("util") || catLower.includes("bill") || catLower.includes("listrik") || catLower.includes("pulsa")) {
+                return "Tagihan & Utilitas";
+            }
+            if (catLower.includes("gaji") || catLower.includes("salary") || catLower.includes("upah")) {
+                return "Gaji & Pendapatan";
+            }
+            if (catLower.includes("invest") || catLower.includes("saham") || catLower.includes("tabung")) {
+                return "Investasi & Tabungan";
+            }
+            if (catLower.includes("bonus") || catLower.includes("hadiah") || catLower.includes("thr")) {
+                return "Bonus & Lain-lain";
+            }
+            return rawCat;
+        }
+
+        const text = description.toLowerCase();
+        if (transType === "Expense") {
+            if (/kopi|coffee|makan|minum|food|drink|cafe|kafe|resto|warung|snack|sarapan|lunch|dinner|kuliner|bakso|mie|ayam|nasi|teh|jus|boba|roti|burger|pizza/i.test(text)) {
+                return "Makanan & Minuman";
+            }
+            if (/bensin|bbm|spbu|pertamax|pertalite|solar|ojol|gojek|grab|maxim|parkir|tol|transport|kereta|mrt|bus|angkot|taxi|taksi|travel|servis|bengkel|kendaraan/i.test(text)) {
+                return "Transportasi";
+            }
+            if (/belanja|shopping|indomaret|alfamart|supermarket|baju|pakaian|celana|sepatu|toserba|pasar|mall|toko|beli/i.test(text)) {
+                return "Belanja";
+            }
+            if (/listrik|pln|air|pdam|wifi|internet|indihome|pulsa|kuota|tagihan|sewa|iuran|bpjs|asuransi|langganan|netflix|spotify/i.test(text)) {
+                return "Tagihan & Utilitas";
+            }
+            return "Makanan & Minuman";
+        } else {
+            if (/gaji|salary|upah|payroll|honor|pendapatan/i.test(text)) {
+                return "Gaji & Pendapatan";
+            }
+            if (/investasi|dividen|saham|crypto|reksadana|tabungan|bunga/i.test(text)) {
+                return "Investasi & Tabungan";
+            }
+            return "Bonus & Lain-lain";
+        }
+    }
     /**
      * Resolves the user identity from JWT header or X-Hub-User-UID header.
      */
@@ -231,38 +290,78 @@ export class HubController {
                     const rawType = String(args.type || "expense").toLowerCase().trim();
                     const transType = (rawType === "income" || rawType === "pemasukan") ? "Income" : "Expense";
                     const description = String(args.description || "Transaksi AI Hub").trim();
-                    const categoryName = String(args.category || "General").trim();
-                    
-                    let dateVal = new Date();
+
+                    // Timezone resolution
+                    const userTimezone = await resolveUserTimezone(req, userId);
+                    const now = new Date();
+                    const userZonedNow = toZonedTime(now, userTimezone);
+
+                    let dateVal: Date = now;
                     if (args.date) {
                         const dStr = String(args.date).toLowerCase().trim();
                         if (dStr === "yesterday" || dStr === "kemarin") {
-                            dateVal.setDate(dateVal.getDate() - 1);
-                        } else if (dStr !== "today" && dStr !== "hari ini") {
-                            const parsed = new Date(args.date);
-                            if (!isNaN(parsed.getTime())) {
-                                dateVal = parsed;
+                            const yesterdayZoned = new Date(userZonedNow);
+                            yesterdayZoned.setDate(yesterdayZoned.getDate() - 1);
+                            dateVal = fromZonedTime(yesterdayZoned, userTimezone);
+                        } else if (dStr === "today" || dStr === "hari ini") {
+                            dateVal = now;
+                        } else {
+                            const matchYmd = String(args.date).trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+                            if (matchYmd) {
+                                const year = parseInt(matchYmd[1]);
+                                const month = parseInt(matchYmd[2]) - 1;
+                                const day = parseInt(matchYmd[3]);
+                                const constructedZoned = new Date(year, month, day, userZonedNow.getHours(), userZonedNow.getMinutes(), userZonedNow.getSeconds());
+                                dateVal = fromZonedTime(constructedZoned, userTimezone);
+                            } else {
+                                const parsed = new Date(args.date);
+                                if (!isNaN(parsed.getTime())) {
+                                    dateVal = parsed;
+                                }
                             }
                         }
                     }
 
-                    // Find or create category
-                    let categoryId = null;
-                    if (categoryName) {
-                        let cat = await CategoryModel.findOne({
-                            user: userObjId,
-                            name: { $regex: new RegExp(`^${categoryName}$`, "i") },
-                        });
-                        if (!cat) {
-                            cat = await CategoryModel.create({
-                                user: userObjId,
-                                name: categoryName,
-                                type: transType.toLowerCase(),
-                                color: transType === "Income" ? "#10b981" : "#ef4444",
-                                icon: transType === "Income" ? "i-heroicons-arrow-down-left" : "i-heroicons-arrow-up-right",
-                            });
+                    // Smart Category Resolution
+                    const resolvedCatName = HubController.inferCategory(description, args.category, transType);
+                    let categoryId: mongoose.Types.ObjectId | null = null;
+
+                    let cat = await CategoryModel.findOne({
+                        user: userObjId,
+                        name: { $regex: new RegExp(`^${resolvedCatName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, "i") },
+                    });
+
+                    if (!cat) {
+                        const userCategories = await CategoryModel.find({ user: userObjId });
+                        if (userCategories.length > 0) {
+                            cat = userCategories.find(c =>
+                                c.name.toLowerCase().includes(resolvedCatName.toLowerCase()) ||
+                                resolvedCatName.toLowerCase().includes(c.name.toLowerCase())
+                            ) || null;
                         }
-                        categoryId = cat._id;
+                    }
+
+                    if (!cat) {
+                        const defaultCatMeta = defaultCategories.find(c =>
+                            c.name.toLowerCase() === resolvedCatName.toLowerCase()
+                        ) || {
+                            name: resolvedCatName,
+                            type: transType.toLowerCase(),
+                            color: transType === "Income" ? "#10B981" : "#F43F5E",
+                            icon: transType === "Income" ? "account_balance_wallet" : (resolvedCatName === "Makanan & Minuman" ? "fastfood" : "tag"),
+                        };
+
+                        cat = await CategoryModel.create({
+                            user: userObjId,
+                            name: defaultCatMeta.name,
+                            type: defaultCatMeta.type || transType.toLowerCase(),
+                            color: defaultCatMeta.color || (transType === "Income" ? "#10B981" : "#F43F5E"),
+                            icon: defaultCatMeta.icon || "tag",
+                        });
+                    }
+
+                    if (cat) {
+                        categoryId = cat._id as mongoose.Types.ObjectId;
                     }
 
                     const newTrans = await TransactionModel.create({
@@ -273,6 +372,8 @@ export class HubController {
                         category: categoryId,
                         date: dateVal,
                     });
+
+                    await newTrans.populate("category");
 
                     return res.json({
                         ...baseResponse,

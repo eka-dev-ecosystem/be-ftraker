@@ -6,7 +6,7 @@ import { validate } from "../../utils/validation";
 import { ErrorResponse, SuccessResponse } from "../../utils/response";
 import TransactionModel from "../transaction/transactionModel";
 
-const defaultCategories = [
+export const defaultCategories = [
     { name: "Makanan & Minuman", type: "expense", color: "#F43F5E", icon: "fastfood" },
     { name: "Transportasi", type: "expense", color: "#3B82F6", icon: "directions_car" },
     { name: "Belanja", type: "expense", color: "#8B5CF6", icon: "shopping_bag" },
