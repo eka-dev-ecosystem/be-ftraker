@@ -11,6 +11,31 @@ import { defaultCategories } from "../category/categoryService";
 
 export class HubController {
     /**
+     * Resolves matching category by semantic synonyms (e.g. "Food and Drink" <-> "Makanan & Minuman").
+     */
+    public static matchCategorySynonyms(userCategories: any[], target: string): any | null {
+        if (!target) return null;
+        const t = target.toLowerCase();
+        const synonymGroups = [
+            ["makan", "minum", "food", "drink", "beverage", "kopi", "coffee", "kuliner", "culinary", "cafe", "restaurant", "resto", "snack"],
+            ["transport", "trans", "bensin", "fuel", "gas", "ojol", "grab", "gojek", "parkir", "parking", "tol", "toll", "travel"],
+            ["belanja", "shop", "shopping", "grocer", "retail", "mart", "pasar", "supermarket"],
+            ["tagihan", "util", "bill", "listrik", "pln", "air", "pdam", "wifi", "internet", "pulsa", "kuota", "langganan", "subscription"],
+            ["gaji", "salary", "upah", "payroll", "honor", "income", "pendapatan"],
+            ["invest", "investasi", "saham", "crypto", "reksadana", "tabungan", "saving", "deposito"],
+            ["bonus", "hadiah", "gift", "thr", "lain", "other", "extra"],
+        ];
+
+        const matchedGroup = synonymGroups.find(group => group.some(kw => t.includes(kw)));
+        if (!matchedGroup) return null;
+
+        return userCategories.find(c => {
+            const catName = (c.name || "").toLowerCase();
+            return matchedGroup.some(kw => catName.includes(kw));
+        }) || null;
+    }
+
+    /**
      * Intelligently infers transaction category from description and input hints.
      */
     public static inferCategory(description: string, rawCategory?: string, transType: string = "Expense"): string {
@@ -150,6 +175,12 @@ export class HubController {
                 }
             }
 
+            let availableCategories: string[] = [];
+            if (userObjId) {
+                const cats = await CategoryModel.find({ user: userObjId }).select("name");
+                availableCategories = cats.map(c => c.name);
+            }
+
             const budgetLimit = 10000000; // standard monthly budget limit default
             const remainingBudget = Math.max(0, budgetLimit - totalSpent);
             const formattedSpent = `Rp ${totalSpent.toLocaleString("id-ID")}`;
@@ -166,6 +197,7 @@ export class HubController {
                     budget_limit: budgetLimit,
                     remaining_budget: remainingBudget,
                     top_category: topCategoryName,
+                    available_categories: availableCategories,
                     overbudget_warning: totalSpent > budgetLimit,
                 },
                 deep_link: `ftracker://expenses?category=all&expected_uid=${userId}`,
@@ -338,6 +370,12 @@ export class HubController {
                                 c.name.toLowerCase().includes(resolvedCatName.toLowerCase()) ||
                                 resolvedCatName.toLowerCase().includes(c.name.toLowerCase())
                             ) || null;
+
+                            // Bilingual & Semantic Synonym Match (e.g. "Food and Drink" <-> "Makanan & Minuman")
+                            if (!cat) {
+                                cat = HubController.matchCategorySynonyms(userCategories, resolvedCatName) ||
+                                      HubController.matchCategorySynonyms(userCategories, args.category || description);
+                            }
                         }
                     }
 
