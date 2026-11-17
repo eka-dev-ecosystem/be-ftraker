@@ -176,9 +176,61 @@ export class HubController {
             }
 
             let availableCategories: string[] = [];
+            let activeIncomes: Array<{ id: string; description: string; amount: number; remaining_amount: number; date: string }> = [];
+
             if (userObjId) {
                 const cats = await CategoryModel.find({ user: userObjId }).select("name");
                 availableCategories = cats.map(c => c.name);
+
+                // Fetch recent/active incomes with remaining amounts so Hub AI knows available sources of funds
+                const recentIncomes = await TransactionModel.find({
+                    user: userObjId,
+                    type: { $regex: /^income$/i },
+                })
+                    .sort({ date: -1, createdAt: -1 })
+                    .limit(10)
+                    .lean();
+
+                if (recentIncomes.length > 0) {
+                    const incIds = recentIncomes.map(i => i._id);
+                    const expenseAggs = await TransactionModel.aggregate([
+                        {
+                            $match: {
+                                user: userObjId,
+                                linkedIncomeId: { $in: incIds },
+                                type: { $regex: /^expense$/i },
+                            },
+                        },
+                        {
+                            $group: {
+                                _id: "$linkedIncomeId",
+                                totalUsed: { $sum: "$amount" },
+                                count: { $sum: 1 },
+                            },
+                        },
+                    ]);
+
+                    const expMap = new Map<string, number>();
+                    for (const agg of expenseAggs) {
+                        expMap.set(String(agg._id), agg.totalUsed || 0);
+                    }
+
+                    activeIncomes = recentIncomes.map((inc: any) => {
+                        const used = expMap.get(String(inc._id)) || 0;
+                        const remaining = (inc.amount || 0) - used;
+                        const dateStr = inc.date
+                            ? (inc.date instanceof Date ? inc.date.toISOString().split("T")[0] : String(inc.date).split("T")[0])
+                            : (inc.createdAt ? String(inc.createdAt).split("T")[0] : "");
+
+                        return {
+                            id: String(inc._id),
+                            description: inc.description,
+                            amount: inc.amount,
+                            remaining_amount: remaining,
+                            date: dateStr,
+                        };
+                    });
+                }
             }
 
             const budgetLimit = 10000000; // standard monthly budget limit default
@@ -198,6 +250,7 @@ export class HubController {
                     remaining_budget: remainingBudget,
                     top_category: topCategoryName,
                     available_categories: availableCategories,
+                    active_incomes: activeIncomes,
                     overbudget_warning: totalSpent > budgetLimit,
                 },
                 deep_link: `ftracker://expenses?category=all&expected_uid=${userId}`,
@@ -260,6 +313,8 @@ export class HubController {
                                     description: { type: "string", description: "Transaction notes/description" },
                                     category: { type: "string", description: "Category name" },
                                     date: { type: "string", description: "Date YYYY-MM-DD" },
+                                    linked_income_id: { type: "string", description: "Optional ObjectId of the Income transaction this expense is deducted from (use matching ID from active_incomes)" },
+                                    source_income: { type: "string", description: "Optional name/keyword of the income source to deduct from (e.g. 'gaji', 'freelance'). If linked_income_id is not given, will search for a matching active income by description" },
                                 },
                                 required: ["amount", "type", "description"],
                             },
@@ -402,6 +457,32 @@ export class HubController {
                         categoryId = cat._id as mongoose.Types.ObjectId;
                     }
 
+                    // Resolve linked income if this is an Expense
+                    let linkedIncomeId: mongoose.Types.ObjectId | null = null;
+                    if (transType === "Expense") {
+                        const rawIncomeId = args.linked_income_id || args.linkedIncomeId;
+                        if (rawIncomeId && mongoose.isValidObjectId(rawIncomeId)) {
+                            const incDoc = await TransactionModel.findOne({
+                                _id: new mongoose.Types.ObjectId(rawIncomeId),
+                                user: userObjId,
+                                type: { $regex: /^income$/i },
+                            });
+                            if (incDoc) {
+                                linkedIncomeId = incDoc._id as mongoose.Types.ObjectId;
+                            }
+                        } else if (args.source_income || args.linked_income_name) {
+                            const sourceQuery = String(args.source_income || args.linked_income_name).trim();
+                            const incDoc = await TransactionModel.findOne({
+                                user: userObjId,
+                                type: { $regex: /^income$/i },
+                                description: { $regex: sourceQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: "i" },
+                            }).sort({ date: -1, createdAt: -1 });
+                            if (incDoc) {
+                                linkedIncomeId = incDoc._id as mongoose.Types.ObjectId;
+                            }
+                        }
+                    }
+
                     const newTrans = await TransactionModel.create({
                         user: userObjId,
                         amount,
@@ -409,9 +490,13 @@ export class HubController {
                         description,
                         category: categoryId,
                         date: dateVal,
+                        ...(linkedIncomeId ? { linkedIncomeId } : {}),
                     });
 
                     await newTrans.populate("category");
+                    if (linkedIncomeId) {
+                        await newTrans.populate("linkedIncomeId", "description amount date type");
+                    }
 
                     return res.json({
                         ...baseResponse,
@@ -454,6 +539,7 @@ export class HubController {
 
                     const items = await TransactionModel.find(filter)
                         .populate("category", "name color icon")
+                        .populate("linkedIncomeId", "description amount date type")
                         .sort({ date: -1, createdAt: -1 })
                         .limit(limit);
 

@@ -347,6 +347,9 @@ class TransactionService {
     }
 
     static async createTransaction(req: Request, res: Response, session: mongoose.ClientSession) {
+        if (!req.body.linkedIncomeId && req.body.linked_income_id) {
+            req.body.linkedIncomeId = req.body.linked_income_id;
+        }
         validate(req.body, createTransactionBodySchema);
 
         const { amount, type, description, category, date, createdAt, linkedIncomeId } = req.body;
