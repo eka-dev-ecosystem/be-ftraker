@@ -327,6 +327,7 @@ export class HubController {
                                 properties: {
                                     type: { type: "string", description: "expense, income, or all" },
                                     limit: { type: "number", description: "Limit results" },
+                                    sort: { type: "string", enum: ["highest", "lowest", "newest", "oldest"], description: "Sort order: 'highest' (largest amount first), 'lowest' (smallest amount first), 'newest', 'oldest'." },
                                 },
                             },
                         },
@@ -537,11 +538,32 @@ export class HubController {
                         ];
                     }
 
+                    let sortQuery: any = { date: -1, createdAt: -1 };
+                    const rawSort = String(args.sort || "newest").toLowerCase().trim();
+                    if (rawSort === "highest" || rawSort === "amount_desc" || rawSort === "largest") {
+                        sortQuery = { amount: -1, date: -1 };
+                    } else if (rawSort === "lowest" || rawSort === "amount_asc" || rawSort === "smallest") {
+                        sortQuery = { amount: 1, date: -1 };
+                    } else if (rawSort === "oldest") {
+                        sortQuery = { date: 1, createdAt: 1 };
+                    }
+
                     const items = await TransactionModel.find(filter)
                         .populate("category", "name color icon")
                         .populate("linkedIncomeId", "description amount date type")
-                        .sort({ date: -1, createdAt: -1 })
+                        .sort(sortQuery)
                         .limit(limit);
+
+                    const mappedItems = items.map(t => ({
+                        id: String(t._id),
+                        _id: String(t._id),
+                        amount: t.amount,
+                        type: t.type,
+                        description: t.description,
+                        date: t.date,
+                        category: (t as any).category?.name || "General",
+                        linkedIncome: (t as any).linkedIncomeId?.description || null,
+                    }));
 
                     return res.json({
                         ...baseResponse,
@@ -550,8 +572,8 @@ export class HubController {
                                 {
                                     type: "text",
                                     text: JSON.stringify({
-                                        count: items.length,
-                                        transactions: items,
+                                        count: mappedItems.length,
+                                        transactions: mappedItems,
                                     }),
                                 },
                             ],
